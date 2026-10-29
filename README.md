@@ -108,9 +108,9 @@ tests/                         pytest tests on synthetic charts
 
 ## Limitations
 
-- Tested on synthetic charts. Real screenshots vary; check the detected pivots.
+- Tested on synthetic charts and a real TradingView ETHUSDT 4h screenshot. Real screenshots vary; check the detected pivots.
 - Needs coloured candles. Hollow, line or Heikin-Ashi charts may detect poorly.
-- Linear price axis only for price calibration.
+- Price calibration supports linear and log axes (`--log`); check a third axis label to confirm.
 - The last few candles cannot be confirmed pivots yet.
 - Grades come from a limited set of studies and will change as evidence changes.
 

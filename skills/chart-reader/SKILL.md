@@ -37,14 +37,17 @@ and ask for a cleaner screenshot (you can still give a rough read).
   `x0,y0,x1,y1`. Estimate it from the image; a little margin is fine.
 - **Calibration** (recommended): pick two price labels on the right axis, far
   apart, and estimate the pixel row of each: `y1:price1,y2:price2`.
-  Only linear price scales are supported; if the axis is logarithmic, skip
-  calibration and describe levels by structure instead of exact prices.
+  **Check the axis scale.** If equal price steps take different pixel heights
+  (e.g. $40 is ~48 px at the top but ~57 px at the bottom), the axis is
+  logarithmic (TradingView often is). Then add `--log` to both `detect` and `draw`.
+  Verify by converting a third axis label with the calibration; it should match within ~0.2%.
 
 ### 3. Detect candles and pivots
 ```bash
-python scripts/annotate.py detect chart.png --region X0,Y0,X1,Y1 --calib Y1:P1,Y2:P2 > detect.json
+python scripts/annotate.py detect chart.png --region X0,Y0,X1,Y1 --calib Y1:P1,Y2:P2 [--log] > detect.json
 ```
 Read the result and check it against what you see:
+- Compare the last candle's `high`/`low` with the OHLC shown in the chart header, if visible. They should match closely.
 - `candle_count` should be close to the number of visible candles. If not,
   adjust `--region`, or `--sat-min` for pale candles.
 - `warnings` and `pivot_confidence`: report low confidence honestly.
@@ -82,7 +85,7 @@ Otherwise show the plan with R:R only and mention 1% risk per trade as a common 
 ### 7. Draw and check
 Write `spec.json` (see `references/spec-format.md`), then:
 ```bash
-python scripts/annotate.py draw chart.png spec.json --detect detect.json --calib Y1:P1,Y2:P2 -o chart_annotated.png
+python scripts/annotate.py draw chart.png spec.json --detect detect.json --calib Y1:P1,Y2:P2 [--log] -o chart_annotated.png
 ```
 Open the output image and check it: pivots sit on wicks, labels are readable,
 plan levels are on the right side. Fix the spec and redraw if needed.

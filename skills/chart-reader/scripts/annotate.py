@@ -80,16 +80,29 @@ def parse_calib(text):
     return (y1, p1, y2, p2)
 
 
+LOG_SCALE = False  # set by --log: price axis is logarithmic
+
+
+def _fwd(p):
+    return math.log(p) if LOG_SCALE else p
+
+
+def _inv(v):
+    return math.exp(v) if LOG_SCALE else v
+
+
 def y_to_price(y, calib):
     if calib is None:
         return None
     y1, p1, y2, p2 = calib
-    return p1 + (y - y1) * (p2 - p1) / (y2 - y1)
+    a, b = _fwd(p1), _fwd(p2)
+    return _inv(a + (y - y1) * (b - a) / (y2 - y1))
 
 
 def price_to_y(price, calib):
     y1, p1, y2, p2 = calib
-    return y1 + (price - p1) * (y2 - y1) / (p2 - p1)
+    a, b = _fwd(p1), _fwd(p2)
+    return y1 + (_fwd(price) - a) * (y2 - y1) / (b - a)
 
 
 def fmt_price(p):
@@ -365,6 +378,9 @@ def label_box(draw, xy, text, font, fg, bg, pad=4, anchor="lt"):
         y -= h / 2 + pad
     elif anchor[1] == "b":
         y -= h + 2 * pad
+    cw, ch = draw.im.size  # keep the box inside the image
+    x = min(max(0, x), cw - w - 2 * pad)
+    y = min(max(0, y), ch - h - 2 * pad)
     draw.rounded_rectangle([x, y, x + w + 2 * pad, y + h + 2 * pad], radius=pad, fill=bg)
     draw.text((x + pad, y + pad - 1), text, font=font, fill=fg)
     return (x, y, x + w + 2 * pad, y + h + 2 * pad)
@@ -451,7 +467,7 @@ def cmd_draw(args):
     if conf:
         lines.append(("dim", f"Confidence: {conf}"))
     lh = int(19 * s)
-    band_h = int(lh * max(1, len(lines)) + 2 * lh + 16 * s)
+    band_h = int(max(lh * max(1, len(lines)), 110 * s) + 2 * lh + 16 * s)
 
     bg = src.getpixel((min(W - 1, 2), min(H - 1, 2)))
     canvas = Image.new("RGBA", (W + panel_w, H + pad_top + pad_bot_lv + band_h), (15, 23, 42, 255))
@@ -473,7 +489,7 @@ def cmd_draw(args):
         col = (34, 197, 94) if kind == "support" else (239, 68, 68)
         top, bot = Y(min(ya, yb)), Y(max(ya, yb))
         d.rectangle([rx0, top, rx1, bot], fill=col + (40,), outline=col + (120,))
-        label_box(d, (rx0 + (rx1 - rx0) * 0.42, top - 2 * s), z.get("label", kind.title()),
+        label_box(d, (rx0 + 8 * s, top - 2 * s), z.get("label", kind.title()),
                   f_small, (255, 255, 255, 240), col + (190,), anchor="lb")
 
     # ---------------- pivots + structure
@@ -549,17 +565,6 @@ def cmd_draw(args):
         tag = plan["type"].upper() + (f"  ·  R:R {plan['rr']}" if plan.get("rr") else "")
         label_box(d, (W + 8 * s, Y(entry_y) - 3 * s), tag, f_mid, (255, 255, 255, 255), (59, 130, 246, 235),
                   anchor="lb")
-    elif plan.get("type") == "no_trade":
-        cx, cy = (rx0 + rx1) / 2, Y(ry0 + (ry1 - ry0) * 0.42)
-        tw, th = text_size(d, "NO TRADE", f_big)
-        pad = 14 * s
-        d.rounded_rectangle([cx - tw / 2 - pad, cy - th / 2 - pad, cx + tw / 2 + pad, cy + th / 2 + pad],
-                            radius=8 * s, fill=(15, 23, 42, 215), outline=(239, 68, 68, 255), width=max(2, int(3 * s)))
-        d.text((cx - tw / 2, cy - th / 2 - 4 * s), "NO TRADE", font=f_big, fill=(239, 68, 68, 255))
-        if plan.get("reason"):
-            label_box(d, (cx, cy + th / 2 + pad + 6 * s), plan["reason"], f_small,
-                      (255, 255, 255, 255), (15, 23, 42, 225), anchor="ct")
-
     # ---------------- bottom band: summary + disclaimer
     by = H + pad_top + pad_bot_lv
     d.line([(0, by), (CW, by)], fill=(71, 85, 105, 255), width=max(1, int(s)))
@@ -572,6 +577,17 @@ def cmd_draw(args):
     d.text((12 * s, CH - lh - 4 * s),
            "Educational only. Not financial advice.  github.com/Dimuth-Wick/crypto-chart-skills",
            font=f_small, fill=(148, 163, 184, 255))
+    if plan.get("type") == "no_trade":
+        tw, th = text_size(d, "NO TRADE", f_big)
+        pad = 12 * s
+        sx1, sy0 = CW - 14 * s, by + 12 * s
+        sx0 = sx1 - tw - 2 * pad
+        d.rounded_rectangle([sx0, sy0, sx1, sy0 + th + 2 * pad], radius=8 * s, fill=(15, 23, 42, 255),
+                            outline=(239, 68, 68, 255), width=max(2, int(3 * s)))
+        d.text((sx0 + pad, sy0 + pad - 4 * s), "NO TRADE", font=f_big, fill=(239, 68, 68, 255))
+        if plan.get("reason"):
+            label_box(d, (sx1, sy0 + th + 2 * pad + 8 * s), plan["reason"], f_small,
+                      (255, 255, 255, 255), (127, 29, 29, 235), anchor="rt")
     # grade legend (right side of the band)
     lx = CW - 12 * s
     for g in ("no_edge", "unproven", "weak", "moderate"):
@@ -641,6 +657,7 @@ def main(argv=None):
     a.add_argument("image")
     a.add_argument("--region", help="price pane only: x0,y0,x1,y1 (exclude price axis, volume, header)")
     a.add_argument("--calib", help="two price-axis reference points: y1:price1,y2:price2")
+    a.add_argument("--log", action="store_true", help="price axis is logarithmic (uneven label spacing)")
     a.add_argument("--left", type=int, default=3, help="candles left of a pivot (default 3)")
     a.add_argument("--right", type=int, default=3, help="candles right of a pivot (default 3)")
     a.add_argument("--sat-min", type=float, default=0.25, help="min colour saturation for candle pixels")
@@ -652,6 +669,7 @@ def main(argv=None):
     b.add_argument("spec")
     b.add_argument("--detect", help="detect.json from the detect command (enables pivot snapping)")
     b.add_argument("--calib", help="y1:price1,y2:price2 so levels can be given as prices")
+    b.add_argument("--log", action="store_true", help="price axis is logarithmic")
     b.add_argument("-o", "--output")
     b.set_defaults(func=cmd_draw)
 
@@ -665,6 +683,8 @@ def main(argv=None):
     c.set_defaults(func=cmd_size)
 
     args = ap.parse_args(argv)
+    global LOG_SCALE
+    LOG_SCALE = bool(getattr(args, "log", False))
     args.func(args)
 
 

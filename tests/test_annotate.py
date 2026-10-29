@@ -87,3 +87,15 @@ def test_size_math():
 def test_size_rejects_wrong_side_target():
     with pytest.raises(subprocess.CalledProcessError):
         run("size", "--account", "1000", "--entry", "100", "--stop", "95", "--targets", "90")
+
+
+def test_log_scale_calibration():
+    # TradingView-style log axis: labels from a real ETHUSDT 4h screenshot
+    annotate.LOG_SCALE = True
+    try:
+        calib = (190, 2800, 871, 2282)
+        for y, price in [(238, 2760), (568, 2500), (788, 2340), (912, 2254.5)]:
+            assert abs(annotate.y_to_price(y, calib) - price) < 2
+            assert abs(annotate.price_to_y(price, calib) - y) < 2
+    finally:
+        annotate.LOG_SCALE = False
