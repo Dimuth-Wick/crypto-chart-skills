@@ -1,0 +1,8 @@
+{
+ "title": "ETHUSDT 4h (sample data)",
+ "use_detected_pivots": true,
+ "summary": ["HH at 2,154 + HL at 2,107", "Plan: buy only on close above HH", "Candles: weak confirmation only"],
+ "patterns": [{"name": "Rising trendline HL to HL", "grade": "moderate", "lines": [[726, 512, 1150, 125]]}],
+ "zones": [{"label": "Support (weak)", "from": 2100, "to": 2112, "kind": "support"}],
+ "plan": {"type": "long", "entry": 2160, "stop": 2098, "targets": [2250, 2310], "rr": "1:1.5 / 1:2.4"}
+}
