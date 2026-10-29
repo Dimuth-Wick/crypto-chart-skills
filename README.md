@@ -6,7 +6,7 @@ Give it a crypto chart screenshot and it returns **two annotated charts**:
 | Chart | What it shows |
 |---|---|
 | **1. Structure** | Swing pivots (HH / HL / LH / LL), market structure, patterns **with their research grade**, and a risk-first trade plan, or a **NO TRADE** stamp |
-| **2. Levels** | Support and resistance lines with **numbered touches**, the pattern (zigzag/channel, triangle, range, double bottom/top), bullish or bearish bias, whether it is **VALID** (3+ touches on each line), and the **exact breakout prices** |
+| **2. Levels** | Support and resistance **zones** (bands, not thin lines) with **numbered touches**, the pattern (zigzag/channel, triangle, range, double bottom/top), bullish or bearish bias, whether it is **VALID** (3+ touches on each line), and the **exact breakout prices** |
 
 Pattern names sit in empty space with an arrow, so they never cover the chart.
 

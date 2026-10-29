@@ -53,7 +53,8 @@ rough guide, not a forecast.
 - Grade `unproven`. Mention, draw lightly, do not base a plan on them alone.
 
 ## Support / resistance
-- Zones, not lines: use a band around 2+ reactions at a similar price.
+- Zones, not lines: always a band with width, never a single line. Sloped lines from
+  `levels` get a band too. A break means a candle **closes beyond the outer edge** of the zone.
 - Grade `weak`. Use them mainly for stop placement and targets.
 
 ## Candlesticks

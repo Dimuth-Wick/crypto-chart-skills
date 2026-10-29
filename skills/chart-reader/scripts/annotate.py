@@ -929,9 +929,27 @@ def cmd_levels(args):
     def export_line(line):
         if not line:
             return None
-        brk = first_break(line, candles, tol)
+        # zone width: spread of the touches around the line, at least `zone_half` each side
+        res_ = [t["y"] - line_y(line, t["x"]) for t in line["touches"]]
+        zone_half = args.zone_pct / 100 * (ry1 - ry0) / 2 if args.zone_pct else 0.75 * tol
+        top_off = min(min(res_), 0) - zone_half
+        bot_off = max(max(res_), 0) + zone_half
+        edge = top_off if line["kind"] == "resistance" else bot_off  # the edge price must close beyond
+        brk = None
+        for i in range(line["last_index"] + 1, len(candles)):
+            c = candles[i]
+            ey = line_y(line, c["x"]) + edge
+            if (line["kind"] == "resistance" and close_y(c) < ey) or (line["kind"] == "support" and close_y(c) > ey):
+                brk = i
+                break
         ly = line_y(line, last["x"])
         return {
+            "zone_top_offset_px": top_off,
+            "zone_bottom_offset_px": bot_off,
+            "zone_top_price": price(ly + top_off),
+            "zone_bottom_price": price(ly + bot_off),
+            "break_edge_y": ly + edge,
+            "break_edge_price": price(ly + edge),
             "kind": line["kind"],
             "touch_count": len(line["touches"]),
             "touches": [{"index": t["index"], "x": t["x"], "y": t["y"], "price": price(t["y"]),
@@ -941,7 +959,7 @@ def cmd_levels(args):
             "y_at_last_candle": ly,
             "price_at_last_candle": price(ly),
             "broken_at_index": brk,
-            "broken_price": price(line_y(line, candles[brk]["x"])) if brk is not None else None,
+            "broken_price": price(line_y(line, candles[brk]["x"]) + edge) if brk is not None else None,
         }
 
     out = {
@@ -988,8 +1006,8 @@ def cmd_levels(args):
         out["pattern"] = {
             "name": name, "bias": bias, "resistance_direction": rdir, "support_direction": sdir,
             "valid": valid, "status": status, "grade": grade, "verdict": verdict,
-            "breakout_up_price": R["price_at_last_candle"], "breakout_up_y": R["y_at_last_candle"],
-            "breakdown_price": S["price_at_last_candle"], "breakdown_y": S["y_at_last_candle"],
+            "breakout_up_price": R["break_edge_price"], "breakout_up_y": R["break_edge_y"],
+            "breakdown_price": S["break_edge_price"], "breakdown_y": S["break_edge_y"],
             "break_price": brk_price,
         }
     else:
@@ -1211,7 +1229,7 @@ def cmd_draw_levels(args):
                          "Confirmed only on a candle CLOSE."))
     lh = int(19 * s)
     band_h = int(lh * len(lines) + 2 * lh + 16 * s)
-    panel_w = int(0.24 * W)
+    panel_w = int(0.30 * W)
 
     bg = src.getpixel((2, 2))
     canvas = Image.new("RGBA", (W + panel_w, H + band_h), (15, 23, 42, 255))
@@ -1226,7 +1244,10 @@ def cmd_draw_levels(args):
     panel_tags = []  # (y, text, colour), stacked later so they never overlap
 
     # zones (light bands)
-    zones = sorted(lv.get("zones", []), key=lambda z: abs(z["center_y"] - lv["last_close_y"]))[:2]
+    line_ys = [L["y_at_last_candle"] for L in (lv.get("resistance"), lv.get("support")) if L]
+    zones = [z for z in lv.get("zones", [])
+             if all(abs(z["center_y"] - ly) > 3 * lv["tolerance_px"] for ly in line_ys)]
+    zones = sorted(zones, key=lambda z: abs(z["center_y"] - lv["last_close_y"]))[:2]
     for z in zones:
         col = GREEN if z["kind"] == "support" else RED
         d.rectangle([rx0, z["top_y"], rx1, z["bottom_y"]], fill=col + (34,), outline=col + (90,))
@@ -1237,19 +1258,31 @@ def cmd_draw_levels(args):
         if not L:
             return
         x_a, y_a = L["start"]
-        y_last = L["y_at_last_candle"]
+        sl = L["slope_px"]
+        top, bot = L.get("zone_top_offset_px", -3 * s), L.get("zone_bottom_offset_px", 3 * s)
         t_last = L["touches"][-1]
-        y_t = y_a + L["slope_px"] * (t_last["x"] - x_a)
-        width = max(2, int((3 if valid else 2) * s))
-        alpha = 245 if valid else 150
-        d.line([(x_a, y_a), (t_last["x"], y_t)], fill=col + (alpha,), width=width)
-        x_end, y_end = rx1, y_a + L["slope_px"] * (rx1 - x_a)
-        if L["slope_px"] and not (ry0 <= y_end <= ry1):  # stop where the line leaves the pane
-            y_end = min(max(y_end, ry0), ry1)
-            x_end = x_a + (y_end - y_a) / L["slope_px"]
+
+        def yl(x):
+            return y_a + sl * (x - x_a)
+
+        x_end = rx1
+        if sl and not (ry0 <= yl(rx1) <= ry1):  # stop where the zone leaves the pane
+            x_end = x_a + (min(max(yl(rx1), ry0), ry1) - y_a) / sl
+        x_end = max(x_end, t_last["x"])
+        alpha_fill = 70 if valid else 45
+        # tested part of the zone (first to last touch): stronger fill
+        d.polygon([(x_a, yl(x_a) + top), (t_last["x"], yl(t_last["x"]) + top),
+                   (t_last["x"], yl(t_last["x"]) + bot), (x_a, yl(x_a) + bot)], fill=col + (alpha_fill,))
+        # projected part: lighter fill
         if x_end > t_last["x"]:
-            dashed_line(d, (t_last["x"], y_t), (x_end, y_end), col + (alpha,), width)
-        occ.line([(x_a, y_a), (rx1, y_a + L["slope_px"] * (rx1 - x_a))], 6 * s)
+            d.polygon([(t_last["x"], yl(t_last["x"]) + top), (x_end, yl(x_end) + top),
+                       (x_end, yl(x_end) + bot), (t_last["x"], yl(t_last["x"]) + bot)], fill=col + (alpha_fill // 2,))
+        ew = max(1, int(2 * s)) if valid else max(1, int(s))
+        for off in (top, bot):  # zone edges
+            d.line([(x_a, yl(x_a) + off), (t_last["x"], yl(t_last["x"]) + off)], fill=col + (230,), width=ew)
+            if x_end > t_last["x"]:
+                dashed_line(d, (t_last["x"], yl(t_last["x"]) + off), (x_end, yl(x_end) + off), col + (180,), ew)
+        occ.line([(x_a, yl(x_a)), (x_end, yl(x_end))], max(6 * s, bot - top))
         rad = 9 * s
         for k, t in enumerate(L["touches"], 1):
             x, y = t["x"], t["y"]
@@ -1269,8 +1302,13 @@ def cmd_draw_levels(args):
     draw_line(lv.get("resistance"), RED, valid)
     draw_line(lv.get("support"), GREEN, valid)
     if pat and pat.get("breakout_up_price") is not None:
-        panel_tags.append((pat["breakout_up_y"], f"Break UP above {fmt_price(pat['breakout_up_price'])}", RED, 240))
-        panel_tags.append((pat["breakdown_y"], f"Break DOWN below {fmt_price(pat['breakdown_price'])}", GREEN, 240))
+        R_, S2 = lv["resistance"], lv["support"]
+        panel_tags.append((pat["breakout_up_y"],
+                           f"Resistance zone {fmt_price(R_.get('zone_bottom_price'))}–{fmt_price(R_.get('zone_top_price'))}"
+                           f"\nBreak UP: close above {fmt_price(pat['breakout_up_price'])}", RED, 240))
+        panel_tags.append((pat["breakdown_y"],
+                           f"Support zone {fmt_price(S2.get('zone_bottom_price'))}–{fmt_price(S2.get('zone_top_price'))}"
+                           f"\nBreak DOWN: close below {fmt_price(pat['breakdown_price'])}", GREEN, 240))
 
     # pattern callouts (after all lines so they avoid them)
     if pat and lv.get("resistance") and lv.get("support"):
@@ -1296,12 +1334,12 @@ def cmd_draw_levels(args):
 
     # panel tags, de-overlapped top to bottom
     panel_tags.sort(key=lambda t: t[0])
-    min_gap = 26 * s
-    placed = []
+    prev_bottom = None
     for y, txt, col, alpha in panel_tags:
-        yy = max(y, placed[-1] + min_gap) if placed else y
-        yy = min(max(yy, 14 * s), H - 14 * s)
-        placed.append(yy)
+        th = text_size(d, txt, f_small)[1] + 8 * s
+        yy = y if prev_bottom is None else max(y, prev_bottom + 6 * s + th / 2)
+        yy = min(max(yy, th / 2 + 4 * s), H - th / 2 - 4 * s)
+        prev_bottom = yy + th / 2
         if abs(yy - y) > 2:
             d.line([(W + 2 * s, y), (W + 12 * s, yy)], fill=col + (200,), width=max(1, int(s)))
         label_box(d, (CW - 8 * s, yy), txt, f_small, (255, 255, 255, 255), col + (alpha,), anchor="rm")
@@ -1410,6 +1448,8 @@ def main(argv=None):
                     help="ignore lines broken more than N candles ago (finished patterns, default 10)")
     lv.add_argument("--max-stale", type=int, default=40,
                     help="a line's last touch must be within the last N candles (default 40)")
+    lv.add_argument("--zone-pct", type=float,
+                    help="support/resistance zone width, %% of pane height (default: 1.5x touch tolerance)")
     lv.add_argument("--left", type=int, default=3)
     lv.add_argument("--right", type=int, default=3)
     lv.add_argument("--tol-pct", type=float, default=1.2, help="touch tolerance, %% of pane height (default 1.2)")

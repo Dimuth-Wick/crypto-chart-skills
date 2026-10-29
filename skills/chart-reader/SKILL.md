@@ -90,7 +90,10 @@ pattern from the two slopes and reports the breakout prices at the latest candle
 - **Valid pattern = 3+ touches on EACH line** (`--min-touches 3`, the default). Fewer touches:
   call it "possible ...", do not grade it, do not base a plan on it.
 - Valid and still inside = `unproven` (forming). Valid and a candle has **closed** outside = `moderate`.
-- Breakout prices: `breakout_up_price` / `breakdown_price`. Always say "on a candle CLOSE".
+- Support and resistance are **zones, not lines**: each line has a band (`zone_top_price` /
+  `zone_bottom_price`) sized from how spread out the touches are. Quote zones as ranges.
+- Breakout prices are the zone's **outer edge**: `breakout_up_price` = top of the resistance zone,
+  `breakdown_price` = bottom of the support zone. Always say "on a candle CLOSE".
 - `double` reports a double bottom/top with its neckline (`weak`). `tentative` points are in the
   last few candles and are not confirmed yet.
 - Lines broken long ago (`--max-age`, default 10 candles) or not touched recently
