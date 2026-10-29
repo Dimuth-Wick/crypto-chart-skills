@@ -1,13 +1,24 @@
 # crypto-chart-skills
 
 **An evidence-graded chart-reading skill for AI agents (Claude, Codex and other tools that load `SKILL.md` skills).**
-Give it a crypto chart screenshot. It marks the swing pivots (HH / HL / LH / LL),
-draws the market structure and any clear pattern **with its research grade**,
-and adds a risk-first trade plan, or a **NO TRADE** stamp when the chart is unclear.
+Give it a crypto chart screenshot and it returns **two annotated charts**:
+
+| Chart | What it shows |
+|---|---|
+| **1. Structure** | Swing pivots (HH / HL / LH / LL), market structure, patterns **with their research grade**, and a risk-first trade plan, or a **NO TRADE** stamp |
+| **2. Levels** | Support and resistance lines with **numbered touches**, the pattern (zigzag/channel, triangle, range, double bottom/top), bullish or bearish bias, whether it is **VALID** (3+ touches on each line), and the **exact breakout prices** |
+
+Pattern names sit in empty space with an arrow, so they never cover the chart.
+
+**Chart 1: structure**
 
 | Input screenshot | Output |
 |---|---|
 | ![input](examples/sample_uptrend.png) | ![output](examples/sample_uptrend_annotated.png) |
+
+**Chart 2: levels.** A descending channel (bearish zigzag) with 3 resistance and 4 support touches, so it is valid, plus the price where it breaks:
+
+![levels](examples/sample_channel_levels.png)
 
 When there is no clean setup, the skill says so:
 
@@ -36,13 +47,26 @@ patterns ([full report](docs/research.md)). The short version:
 So the skill leads with structure, shows every pattern's grade on the chart, and
 treats "NO TRADE" as a normal answer.
 
+### The 3-touch rule
+A support/resistance pattern (zigzag channel, range, triangle) only counts as **valid** when
+price has touched the resistance line **3+ times** and the support line **3+ times**, without
+candle bodies closing through the lines. This rule comes from my own trading experience.
+
+| Touches | Result |
+|---|---|
+| Fewer than 3 on a line | "Possible ..." only, not graded, no plan |
+| 3+ each, still inside | Valid, forming: ⚪ Unproven until breakout |
+| 3+ each, candle **closed** outside | Valid breakout: 🟢 Moderate |
+
+A valid pattern is not a guaranteed breakout. It only means the levels are well tested.
+
 ## How it works
 
 ```
-screenshot ──► detect (Python)            ──► Claude/Codex reads the result  ──► draw (Python)
-               finds candles by colour,        checks structure, names a          pivots, structure,
-               swing pivots, HH/HL labels,     pattern only if clear, grades      graded pattern,
-               trend, break of structure       it, applies risk rules             plan or NO TRADE
+screenshot ──► detect ──► levels ──► Claude/Codex checks the result ──► draw        (chart 1: structure)
+               candles,    S/R lines,   grades patterns, applies            draw-levels (chart 2: levels)
+               pivots,     touches,     risk rules, plan or NO TRADE
+               HH/HL       breakouts
 ```
 
 The script snaps every pivot to a real candle wick, because general vision
@@ -83,13 +107,16 @@ timeframes are also where fees, spread and fast bots have the biggest effect.
 cd skills/chart-reader
 # 1. find candles and pivots (region = price pane only, calib = two axis labels)
 python scripts/annotate.py detect chart.png --region 10,50,1190,570 --calib 50:2168.3,570:1909.5 > detect.json
-# 2. draw your annotations (see references/spec-format.md)
+# 2. chart 1: draw your annotations (see references/spec-format.md)
 python scripts/annotate.py draw chart.png spec.json --detect detect.json --calib 50:2168.3,570:1909.5 -o out.png
-# 3. position size and risk/reward
+# 3. support/resistance, touches, pattern, breakout prices + chart 2
+python scripts/annotate.py levels detect.json > levels.json
+python scripts/annotate.py draw-levels chart.png levels.json --detect detect.json -o levels.png
+# 4. position size and risk/reward
 python scripts/annotate.py size --account 1000 --risk-pct 1 --entry 2160 --stop 2098 --targets 2250 2310
 ```
 
-Try it on a generated chart: `python examples/make_sample_chart.py test.png`
+Try it on a generated chart: `python examples/make_sample_chart.py test.png --style channel`
 
 ## Repository layout
 

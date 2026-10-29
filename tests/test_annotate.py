@@ -99,3 +99,43 @@ def test_log_scale_calibration():
             assert abs(annotate.price_to_y(price, calib) - y) < 2
     finally:
         annotate.LOG_SCALE = False
+
+
+def test_levels_valid_channel(tmp_path):
+    img = tmp_path / "ch.png"
+    truth = render(str(img), n=80, seed=5, style="channel", volume=False)
+    det = tmp_path / "d.json"
+    det.write_text(run("detect", str(img), "--calib", truth["calib"]))
+    lv = json.loads(run("levels", str(det)))
+    pat = lv["pattern"]
+    assert pat["name"].startswith("Descending channel")
+    assert pat["bias"] == "bearish"
+    assert pat["valid"] and lv["resistance"]["touch_count"] >= 3 and lv["support"]["touch_count"] >= 3
+    assert pat["status"] == "inside" and pat["grade"] == "unproven"  # no breakout yet
+    assert pat["breakout_up_price"] > lv["last_close_price"] > pat["breakdown_price"]
+    out = tmp_path / "lv.png"
+    lvp = tmp_path / "lv.json"
+    lvp.write_text(json.dumps(lv))
+    run("draw-levels", str(img), str(lvp), "--detect", str(det), "-o", str(out))
+    assert out.exists() and out.stat().st_size > 10_000
+
+
+def test_levels_needs_three_touches(tmp_path):
+    img = tmp_path / "ch.png"
+    truth = render(str(img), n=80, seed=5, style="channel", volume=False)
+    det = tmp_path / "d.json"
+    det.write_text(run("detect", str(img), "--calib", truth["calib"]))
+    lv = json.loads(run("levels", str(det), "--min-touches", "6"))
+    assert lv["pattern"]["valid"] is False and lv["pattern"]["grade"] == "none"
+
+
+def test_callout_avoids_occupied_area():
+    from PIL import Image, ImageDraw
+    occ = annotate.Occupancy((400, 300))
+    occ.box((0, 0, 200, 300), grow=0)  # left half busy
+    im = Image.new("RGBA", (400, 300))
+    d = ImageDraw.Draw(im)
+    f = annotate.load_font(12)
+    b = annotate.callout(d, occ, (190, 150), [("Label", f, (255, 255, 255, 255))], (0, 0, 400, 300), 1.0,
+                         (234, 179, 8))
+    assert b[0] >= 200  # placed in the empty right half

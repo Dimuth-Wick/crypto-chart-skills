@@ -1,12 +1,19 @@
 ---
 name: chart-reader
-description: Annotate a crypto chart screenshot with swing pivots (HH/HL/LH/LL), market structure, evidence-graded chart patterns and a risk-first trade plan or a NO TRADE stamp. Use when the user shares a candlestick chart image and asks what the chart shows, where to enter, exit or put a stop, or whether a setup is worth taking. Educational, not financial advice.
+description: Annotate a crypto chart screenshot as two images - a structure chart (swing pivots HH/HL/LH/LL, evidence-graded patterns, risk-first trade plan or NO TRADE) and a levels chart (support/resistance lines with counted touches, pattern name and exact breakout prices). Use when the user shares a candlestick chart image and asks what the chart shows, where to enter, exit or put a stop, or whether a setup is worth taking. Educational, not financial advice.
 ---
 
 # Chart Reader
 
-Turn a chart screenshot into an **annotated image** plus a **short text card**.
-The image is the main answer. Keep text to a few lines.
+Turn a chart screenshot into **two annotated images** plus a **short text card**:
+
+1. **Structure chart** (`draw`): pivots HH/HL/LH/LL, structure line, graded patterns, plan or NO TRADE.
+2. **Levels chart** (`draw-levels`): support and resistance lines with numbered touches,
+   the pattern name and bias (zigzag/channel, triangle, range, double bottom/top), whether it
+   is VALID, and the exact price where it breaks up or down.
+
+The images are the main answer. Keep text to a few lines.
+Labels are placed in empty areas with an arrow to the pattern, so they never cover it.
 
 Everything in this skill follows the research in `docs/research.md` of the repo:
 market structure has the best evidence, classic shapes are weak, candlestick
@@ -21,6 +28,9 @@ patterns mostly have no edge, and risk management matters more than any pattern.
   - `references/patterns.md`: how to recognise each pattern and when it counts as confirmed.
   - `references/risk-rules.md`: when to trade, when to say NO TRADE, sizing.
   - `references/spec-format.md`: the JSON the `draw` command accepts.
+
+**Recommended timeframes:** 4h and higher. 1h sometimes. Below 1h, say patterns are
+unreliable there (author's experience; noise, fees and fast bots dominate).
 
 ## Workflow
 
@@ -70,6 +80,24 @@ Rules that are easy to get wrong:
   A triangle that has **not** broken out = `unproven`.
 - Support/resistance = `weak`. Candlestick patterns = `no_edge`, mention them only as context.
 
+### 5b. Support/resistance and the 3-touch rule
+```bash
+python scripts/annotate.py levels detect.json > levels.json
+```
+It fits the best resistance line through swing highs and support line through swing lows
+(lines whose candle **bodies** never close through them), counts the touches, names the
+pattern from the two slopes and reports the breakout prices at the latest candle.
+- **Valid pattern = 3+ touches on EACH line** (`--min-touches 3`, the default). Fewer touches:
+  call it "possible ...", do not grade it, do not base a plan on it.
+- Valid and still inside = `unproven` (forming). Valid and a candle has **closed** outside = `moderate`.
+- Breakout prices: `breakout_up_price` / `breakdown_price`. Always say "on a candle CLOSE".
+- `double` reports a double bottom/top with its neckline (`weak`). `tentative` points are in the
+  last few candles and are not confirmed yet.
+- Lines broken long ago (`--max-age`, default 10 candles) or not touched recently
+  (`--max-stale`, default 40) are ignored, so the result describes the **current** pattern.
+Check the lines against the image. If they look wrong, say so and rely on structure.
+Never say a pattern "guarantees" a breakout; 3 touches makes a pattern valid, not certain.
+
 ### 6. Decide: plan or NO TRADE
 Follow `references/risk-rules.md`. Short version:
 - Trade direction must agree with structure (or with a confirmed break).
@@ -87,15 +115,22 @@ Write `spec.json` (see `references/spec-format.md`), then:
 ```bash
 python scripts/annotate.py draw chart.png spec.json --detect detect.json --calib Y1:P1,Y2:P2 [--log] -o chart_annotated.png
 ```
-Open the output image and check it: pivots sit on wicks, labels are readable,
-plan levels are on the right side. Fix the spec and redraw if needed.
-Deliver the annotated image to the user.
+Then the levels chart:
+```bash
+python scripts/annotate.py draw-levels chart.png levels.json --detect detect.json --spec levels_spec.json -o chart_levels.png
+```
+(`levels_spec.json` is optional: `{"title": "...", "summary": ["extra line"]}`.)
+
+Open both images and check them: pivots sit on wicks, lines touch the numbered points,
+labels are readable and do not cover the pattern. Fix and redraw if needed.
+Deliver **both** images to the user.
 
 ## Text card (keep it short)
 
 ```
 📊 SYMBOL TF: UPTREND (HH + HL) · confidence: high
-🔺 Pattern: Ascending triangle breakout: Evidence MODERATE
+🔺 Pattern: Ascending triangle breakout (R 3 / S 3 touches, VALID): Evidence MODERATE
+📏 Break UP above 2,160 · Break DOWN below 2,090 (on a candle close)
 🎯 Plan: LONG above 2,160 · Stop 2,098 · T1 2,250 (R:R 1.5) · T2 2,310 (2.4)
 ⚠️ Risk 1% max. Leverage can liquidate you.
 Educational only. Not financial advice.

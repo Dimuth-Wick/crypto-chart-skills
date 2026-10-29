@@ -10,12 +10,27 @@ lines, so lines touch real wicks. "Confirmed" always means a candle has
 - **Break of structure (BOS)**: close above the last swing high (bullish) or below
   the last swing low (bearish). `detect` reports this as `structure_break`.
 
+## The 3-touch rule (support and resistance lines)
+A line pattern (channel/zigzag, range, triangle) is **valid only if price touched the
+resistance line 3+ times AND the support line 3+ times**, and candle bodies did not close
+through the lines in between (wicks may poke through). Use `annotate.py levels`.
+- 3+ touches each, inside → valid, forming (`unproven`).
+- 3+ touches each, candle **closed** outside → breakout (`moderate`).
+- Fewer touches → "possible ..." only, not graded.
+3 touches makes the pattern valid. It does not guarantee the breakout direction.
+
+## Channels (zigzag)
+- **Descending channel (bearish zigzag)**: both lines falling, roughly parallel.
+- **Ascending channel (bullish zigzag)**: both lines rising.
+- Breakout = candle close outside either line. A break against the channel's bias
+  (e.g. up out of a descending channel) is a possible reversal; wait for structure to confirm.
+
 ## Range
-- At least 2 touches of a similar high and 2 of a similar low (within ~0.5% / a few pixels).
+- At least 3 touches of a similar high and 3 of a similar low (the 3-touch rule).
 - Draw top and bottom lines. Breakout = close outside. Grade `moderate` only after the close.
 
 ## Triangles
-Need at least 2 highs and 2 lows touching the lines (4 pivots).
+Need at least 3 highs and 3 lows touching the lines (the 3-touch rule).
 - **Ascending**: flat highs (EQH), rising lows (HL, HL).
 - **Descending**: falling highs (LH, LH), flat lows (EQL).
 - **Symmetrical**: falling highs (LH) and rising lows (HL).

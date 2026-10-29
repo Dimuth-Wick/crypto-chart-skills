@@ -22,7 +22,27 @@ GREEN = (38, 166, 154)
 RED = (239, 83, 80)
 
 
+def make_channel(n, seed, slope=-0.0025, period=18, width=0.045):
+    """Zigzag between two parallel lines (descending channel if slope < 0)."""
+    rng = np.random.default_rng(seed)
+    mid = 2000 * np.exp(slope * np.arange(n))
+    phase = (np.arange(n) % period) / period
+    tri = np.where(phase < 0.5, phase * 4 - 1, 3 - phase * 4)  # -1..1 zigzag
+    close = mid * (1 + tri * width / 2 * 0.85) * (1 + rng.normal(0, 0.002, n))
+    open_ = np.concatenate([[close[0]], close[:-1]])
+    upper, lower = mid * (1 + width / 2), mid * (1 - width / 2)
+    high = np.maximum(open_, close) * (1 + np.abs(rng.normal(0, 0.002, n)))
+    low = np.minimum(open_, close) * (1 - np.abs(rng.normal(0, 0.002, n)))
+    top = (np.abs(tri - 1) < 1e-9)
+    bot = (np.abs(tri + 1) < 1e-9)
+    high = np.where(top, upper, np.minimum(high, upper))
+    low = np.where(bot, lower, np.maximum(low, lower))
+    return open_, high, low, close, rng.uniform(0.3, 1.0, n)
+
+
 def make_ohlc(n, seed, style):
+    if style == "channel":
+        return make_channel(n, seed)
     rng = np.random.default_rng(seed)
     drift = {"uptrend": 0.0025, "downtrend": -0.0025, "range": 0.0}[style]
     wave = np.sin(np.linspace(0, 5 * np.pi, n)) * 0.012
@@ -100,7 +120,7 @@ if __name__ == "__main__":
     ap.add_argument("out")
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--n", type=int, default=70)
-    ap.add_argument("--style", choices=["uptrend", "downtrend", "range"], default="uptrend")
+    ap.add_argument("--style", choices=["uptrend", "downtrend", "range", "channel"], default="uptrend")
     ap.add_argument("--no-volume", action="store_true")
     a = ap.parse_args()
     m = render(a.out, a.n, a.seed, a.style, volume=not a.no_volume)

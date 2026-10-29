@@ -2,12 +2,15 @@
 """
 annotate.py - chart-reader helper for crypto chart screenshots.
 
-Three commands:
+Commands:
 
   detect  Find candles in a screenshot by colour, then find swing pivots
           and label them HH / HL / LH / LL. Prints JSON.
-  draw    Draw pivots, structure, patterns, zones and a trade plan
+  draw    Chart 1: pivots, structure, patterns, zones and a trade plan
           (or a NO TRADE stamp) on the screenshot from a JSON spec.
+  levels  Support/resistance lines, touch counts (3+ each = valid),
+          pattern name, bias and exact breakout prices. Prints JSON.
+  draw-levels  Chart 2: the levels, numbered touches, breakout prices.
   size    Position sizing and risk/reward from entry, stop and targets.
 
 Educational tool only. Not financial advice.
@@ -15,6 +18,8 @@ Educational tool only. Not financial advice.
 Examples
   python annotate.py detect chart.png --region 0,60,1180,640 --calib 120:2400,560:2200 > detect.json
   python annotate.py draw chart.png spec.json --detect detect.json -o chart_annotated.png
+  python annotate.py levels detect.json > levels.json
+  python annotate.py draw-levels chart.png levels.json --detect detect.json -o chart_levels.png
   python annotate.py size --account 1000 --risk-pct 1 --entry 2350 --stop 2290 --targets 2470 2560
 """
 
@@ -25,7 +30,7 @@ import os
 import sys
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 # ----------------------------------------------------------------------------
 # Shared helpers
@@ -327,6 +332,8 @@ def cmd_detect(args):
         "image_size": [W, H],
         "region": list(region),
         "calibrated": calib is not None,
+        "calib": args.calib,
+        "log": LOG_SCALE,
         "candle_count": len(candles),
         "median_candle_width": float(np.median([c["width"] for c in candles])) if candles else None,
         "pivot_settings": {"left": args.left, "right": args.right},
@@ -425,6 +432,115 @@ def snap_pivot(p, candles):
     return p
 
 
+class Occupancy:
+    """Where candles, lines and labels already are, so callouts go to empty space."""
+
+    def __init__(self, size):
+        self.img = Image.new("L", size, 0)
+        self.d = ImageDraw.Draw(self.img)
+        self._ii = None
+
+    def add_mask(self, mask, x, y):
+        m = Image.fromarray(mask.astype("uint8") * 255).filter(ImageFilter.MaxFilter(9))
+        self.img.paste(255, (int(x), int(y)), m)
+        self._ii = None
+
+    def box(self, b, grow=4):
+        self.d.rectangle([b[0] - grow, b[1] - grow, b[2] + grow, b[3] + grow], fill=255)
+        self._ii = None
+
+    def line(self, pts, width):
+        self.d.line([tuple(p) for p in pts], fill=255, width=max(1, int(width)))
+        self._ii = None
+
+    def cost(self, b):
+        if self._ii is None:
+            arr = (np.asarray(self.img) > 0).astype(np.int64)
+            self._ii = np.pad(arr.cumsum(0).cumsum(1), ((1, 0), (1, 0)))
+        h, w = self._ii.shape[0] - 1, self._ii.shape[1] - 1
+        x0, y0 = max(0, int(b[0])), max(0, int(b[1]))
+        x1, y1 = min(w, int(b[2])), min(h, int(b[3]))
+        if x1 <= x0 or y1 <= y0:
+            return 1e12
+        ii = self._ii
+        return int(ii[y1, x1] - ii[y0, x1] - ii[y1, x0] + ii[y0, x0])
+
+
+def draw_arrow(d, p_from, p_to, col, width, head):
+    d.line([p_from, p_to], fill=col, width=width)
+    ang = math.atan2(p_to[1] - p_from[1], p_to[0] - p_from[0])
+    pts = [p_to]
+    for da in (150, -150):
+        a = ang + math.radians(da)
+        pts.append((p_to[0] + head * math.cos(a), p_to[1] + head * math.sin(a)))
+    d.polygon(pts, fill=col)
+
+
+def callout(d, occ, anchor, rows, bounds, s, accent):
+    """A label box placed in the emptiest nearby spot, with an arrow to `anchor`.
+
+    rows: list of (text, font, rgba). bounds: (x0, y0, x1, y1) the box must stay in.
+    """
+    pad, gap = 8 * s, 4 * s
+    sizes = [text_size(d, t, f) for t, f, _ in rows]
+    w = max(sz[0] for sz in sizes) + 2 * pad + 6 * s
+    h = sum(sz[1] for sz in sizes) + gap * (len(rows) - 1) + 2 * pad
+    ax, ay = anchor
+    bx0, by0, bx1, by1 = bounds
+    best = None
+    for r in (70, 110, 160, 220, 290, 370, 460):
+        for k in range(24):
+            ang = 2 * math.pi * k / 24
+            cx, cy = ax + r * s * math.cos(ang), ay + r * s * math.sin(ang)
+            b = (cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2)
+            if b[0] < bx0 or b[1] < by0 or b[2] > bx1 or b[3] > by1:
+                continue
+            c = occ.cost(b) + r * s * 4  # covering things costs far more than distance
+            if best is None or c < best[0]:
+                best = (c, b)
+    if best is None:
+        x = min(max(bx0, ax - w / 2), bx1 - w)
+        y = min(max(by0, ay - h - 60 * s), by1 - h)
+        b = (x, y, x + w, y + h)
+    else:
+        b = best[1]
+    # arrow from the box edge nearest the anchor
+    ex, ey = min(max(ax, b[0]), b[2]), min(max(ay, b[1]), b[3])
+    dist = math.hypot(ax - ex, ay - ey)
+    if dist > 12 * s:
+        k = (dist - 7 * s) / dist
+        tip = (ex + (ax - ex) * k, ey + (ay - ey) * k)
+        draw_arrow(d, (ex, ey), tip, accent + (255,), max(2, int(2 * s)), 10 * s)
+        occ.line([(ex, ey), tip], 6 * s)
+    d.rounded_rectangle(b, radius=7 * s, fill=(15, 23, 42, 238), outline=accent + (255,), width=max(1, int(2 * s)))
+    d.rectangle([b[0] + 2 * s, b[1] + 6 * s, b[0] + 6 * s, b[3] - 6 * s], fill=accent + (255,))
+    y = b[1] + pad
+    for (t, f, c), sz in zip(rows, sizes):
+        d.text((b[0] + pad + 6 * s, y - 2 * s), t, font=f, fill=c)
+        y += sz[1] + gap
+    occ.box(b)
+    return b
+
+
+def pane_occupancy(src, canvas_size, region, top_offset):
+    """Occupancy map pre-filled with the candles of the price pane."""
+    occ = Occupancy(canvas_size)
+    rx0, ry0, rx1, ry1 = (int(v) for v in region)
+    rgb = np.asarray(src.convert("RGB"))[ry0:ry1, rx0:rx1]
+    mask, _, _ = candle_mask(rgb, 0.25, 0.25)
+    occ.add_mask(mask, rx0, ry0 + top_offset)
+    return occ
+
+
+def calib_from(args, spec, det):
+    """Calibration and log flag: command line first, then spec, then detect.json."""
+    global LOG_SCALE
+    if det and det.get("log"):
+        LOG_SCALE = True
+    text = getattr(args, "calib", None) or (spec or {}).get("calib") or (det or {}).get("calib")
+    return parse_calib(text)
+
+
 def cmd_draw(args):
     spec = json.load(open(args.spec, encoding="utf-8"))
     src = Image.open(args.image).convert("RGBA")
@@ -433,7 +549,7 @@ def cmd_draw(args):
 
     det = json.load(open(args.detect, encoding="utf-8")) if args.detect else None
     candles = det["candles"] if det else []
-    calib = parse_calib(args.calib or spec.get("calib"))
+    calib = calib_from(args, spec, det)
 
     f_small = load_font(int(12 * s))
     f_mid = load_font(int(14 * s), bold=True)
@@ -480,6 +596,8 @@ def cmd_draw(args):
 
     overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
     d = ImageDraw.Draw(overlay)
+    occ = pane_occupancy(src, canvas.size, region, pad_top)
+    pane_bounds = (rx0 + 4 * s, Y(ry0) + 4 * s, rx1 - 4 * s, Y(ry1) - 4 * s)
 
     # ---------------- zones
     for z in spec.get("zones", []):
@@ -489,8 +607,8 @@ def cmd_draw(args):
         col = (34, 197, 94) if kind == "support" else (239, 68, 68)
         top, bot = Y(min(ya, yb)), Y(max(ya, yb))
         d.rectangle([rx0, top, rx1, bot], fill=col + (40,), outline=col + (120,))
-        label_box(d, (rx0 + 8 * s, top - 2 * s), z.get("label", kind.title()),
-                  f_small, (255, 255, 255, 240), col + (190,), anchor="lb")
+        occ.box(label_box(d, (rx0 + 8 * s, top - 2 * s), z.get("label", kind.title()),
+                          f_small, (255, 255, 255, 240), col + (190,), anchor="lb"))
 
     # ---------------- pivots + structure
     pivots = spec.get("pivots")
@@ -503,6 +621,7 @@ def cmd_draw(args):
     if spec.get("structure_line", True) and len(pivots) >= 2:
         pts = [(float(p["x"]), Y(p["y"])) for p in pivots]
         d.line(pts, fill=(147, 197, 253, 210), width=max(2, int(2 * s)), joint="curve")
+        occ.line(pts, 4 * s)
 
     r = 5 * s
     for p in pivots:
@@ -511,12 +630,14 @@ def cmd_draw(args):
         is_high = p.get("type", "high") == "high"
         col = (34, 197, 94) if lab in ("HH", "HL") else (239, 68, 68) if lab in ("LH", "LL") else (203, 213, 225)
         d.ellipse([x - r, y - r, x + r, y + r], fill=col + (255,), outline=(255, 255, 255, 255), width=max(1, int(s)))
+        occ.box((x - r, y - r, x + r, y + r))
         if lab:
             anchor = "cb" if is_high else "ct"
             yy = y - r - 3 * s if is_high else y + r + 3 * s
-            label_box(d, (x, yy), lab, f_mid, (255, 255, 255, 255), col + (235,), anchor=anchor)
+            occ.box(label_box(d, (x, yy), lab, f_mid, (255, 255, 255, 255), col + (235,), anchor=anchor))
 
-    # ---------------- patterns (label at the middle of the first line, grade badge on top)
+    # ---------------- patterns: lines on the chart, name in an empty spot with an arrow
+    pending = []
     for pat in spec.get("patterns", []):
         grade = str(pat.get("grade", "unproven")).lower().replace(" ", "_")
         col = GRADE_COLOURS.get(grade, GRADE_COLOURS["unproven"])
@@ -527,18 +648,19 @@ def cmd_draw(args):
                 ya, yb = price_to_y(ya, calib), price_to_y(yb, calib)
             segs.append((xa, Y(ya), xb, Y(yb)))
             dashed_line(d, (xa, Y(ya)), (xb, Y(yb)), col + (240,), max(2, int(3 * s)))
+            occ.line([(xa, Y(ya)), (xb, Y(yb))], 6 * s)
         if segs:
             xa, ya, xb, yb = segs[0]
-            ax, ay = (xa + xb) / 2, (ya + yb) / 2
-            ax += 14 * s  # nudge off the line
+            anchor_pt = ((xa + xb) / 2, (ya + yb) / 2)
         else:
-            ax, ay = rx0 + (rx1 - rx0) * 0.5, Y(ry0 + 40 * s)
-        name = pat.get("name", "Pattern")
-        status = pat.get("status")
-        text = name + (f" ({status})" if status else "")
-        box = label_box(d, (ax, ay), text, f_mid, (255, 255, 255, 255), (15, 23, 42, 225), anchor="lt")
-        label_box(d, (box[0], box[1] - 3 * s), f"Evidence: {GRADE_TEXT.get(grade, grade.upper())}",
-                  f_small, (15, 23, 42, 255), col + (245,), anchor="lb")
+            anchor_pt = (rx0 + (rx1 - rx0) * 0.5, Y(ry0 + 40 * s))
+        rows = [(pat.get("name", "Pattern"), f_mid, (255, 255, 255, 255))]
+        if pat.get("status"):
+            rows.append((pat["status"], f_small, (203, 213, 225, 255)))
+        rows.append((f"Evidence: {GRADE_TEXT.get(grade, grade.upper())}", f_small, col + (255,)))
+        pending.append((anchor_pt, rows, col))
+    for anchor_pt, rows, col in pending:  # after all lines, so callouts avoid every line
+        callout(d, occ, anchor_pt, rows, pane_bounds, s, col)
 
     # ---------------- plan
     if has_plan:
@@ -598,6 +720,457 @@ def cmd_draw(args):
 
     out = Image.alpha_composite(canvas, overlay).convert("RGB")
     out_path = args.output or os.path.splitext(args.image)[0] + "_annotated.png"
+    out.save(out_path)
+    print(out_path)
+
+
+# ----------------------------------------------------------------------------
+# levels: support / resistance lines, touch counts, pattern, breakout prices
+# ----------------------------------------------------------------------------
+
+def close_y(c):
+    return c["body_top_y"] if c["colour"] == "green" else c["body_bottom_y"]
+
+
+def tail_extremes(candles, left, right):
+    """Tentative swing points inside the last `right` candles (not confirmable yet)."""
+    n = len(candles)
+    out = []
+    if n < left + 2:
+        return out
+    tail = range(max(left, n - right), n)
+    i_hi = min(tail, key=lambda i: candles[i]["high_y"])
+    if all(candles[i_hi]["high_y"] < candles[j]["high_y"] for j in range(i_hi - left, i_hi)):
+        out.append({"index": i_hi, "type": "high", "y": candles[i_hi]["high_y"], "tentative": True})
+    i_lo = max(tail, key=lambda i: candles[i]["low_y"])
+    if all(candles[i_lo]["low_y"] > candles[j]["low_y"] for j in range(i_lo - left, i_lo)):
+        out.append({"index": i_lo, "type": "low", "y": candles[i_lo]["low_y"], "tentative": True})
+    return out
+
+
+def best_line(points, candles, kind, tol, max_age=None, max_stale=None):
+    """Line through two swing points with the most touches whose candle BODIES respect it.
+
+    Wicks may poke through; a body closing through the line between the first
+    and the last touch rejects the line.
+    """
+    best = None
+    for a in range(len(points)):
+        for b in range(a + 1, len(points)):
+            pa, pb = points[a], points[b]
+            if pb["x"] == pa["x"]:
+                continue
+            slope = (pb["y"] - pa["y"]) / (pb["x"] - pa["x"])
+
+            def f(x, pa=pa, slope=slope):
+                return pa["y"] + slope * (x - pa["x"])
+
+            touches = [p for p in points if abs(p["y"] - f(p["x"])) <= tol]
+            first = min(t["index"] for t in touches)
+            last = max(t["index"] for t in touches)
+            ok = True
+            for c in candles[first:last + 1]:
+                if kind == "resistance" and c["body_top_y"] < f(c["x"]) - tol:
+                    ok = False
+                    break
+                if kind == "support" and c["body_bottom_y"] > f(c["x"]) + tol:
+                    ok = False
+                    break
+            if not ok:
+                continue
+            if max_stale is not None and last < len(candles) - max_stale:
+                continue  # price has not touched this line for a long time
+            if max_age is not None:  # skip lines that were broken long ago (finished patterns)
+                tmp = {"kind": kind, "y0": pa["y"], "x0": pa["x"], "slope": slope, "last_index": last}
+                brk = first_break(tmp, candles, tol)
+                if brk is not None and brk < len(candles) - max_age:
+                    continue
+            key = (len(touches), last, last - first)
+            if best is None or key > best[0]:
+                best = (key, {"kind": kind, "y0": pa["y"], "x0": pa["x"], "slope": slope,
+                              "first_index": first, "last_index": last,
+                              "touches": sorted(touches, key=lambda t: t["index"])})
+    return best[1] if best else None
+
+
+def line_y(line, x):
+    return line["y0"] + line["slope"] * (x - line["x0"])
+
+
+def first_break(line, candles, tol):
+    """First candle after the last touch that CLOSES beyond the line."""
+    for i in range(line["last_index"] + 1, len(candles)):
+        c = candles[i]
+        ly = line_y(line, c["x"])
+        if line["kind"] == "resistance" and close_y(c) < ly - tol:
+            return i
+        if line["kind"] == "support" and close_y(c) > ly + tol:
+            return i
+    return None
+
+
+def classify(res, sup, tol):
+    """Name the pattern from the slopes of the two lines (pixel y grows downward)."""
+    x_first = min(res["touches"][0]["x"], sup["touches"][0]["x"])
+    x_last = max(res["touches"][-1]["x"], sup["touches"][-1]["x"])
+    span = max(1.0, x_last - x_first)
+
+    def direction(line):
+        dy = line["slope"] * span
+        if abs(dy) <= 1.5 * tol:
+            return "flat"
+        return "up" if dy < 0 else "down"
+
+    r, s_ = direction(res), direction(sup)
+    table = {
+        ("flat", "flat"): ("Range (rectangle)", "neutral"),
+        ("down", "down"): ("Descending channel (bearish zigzag)", "bearish"),
+        ("up", "up"): ("Ascending channel (bullish zigzag)", "bullish"),
+        ("flat", "up"): ("Ascending triangle", "bullish"),
+        ("down", "flat"): ("Descending triangle", "bearish"),
+        ("down", "up"): ("Symmetrical triangle", "neutral"),
+        ("up", "down"): ("Broadening pattern", "neutral"),
+        ("up", "flat"): ("Rising resistance, flat support (broadening)", "neutral"),
+        ("flat", "down"): ("Flat resistance, falling support (broadening)", "neutral"),
+    }
+    name, bias = table[(r, s_)]
+    return name, bias, r, s_
+
+
+def zones_from(points, close_yv, tol, max_zones=4):
+    pts = sorted(points, key=lambda p: p["y"])
+    groups, cur = [], []
+    for p in pts:
+        if cur and p["y"] - cur[0]["y"] > 2 * tol:
+            groups.append(cur)
+            cur = []
+        cur.append(p)
+    if cur:
+        groups.append(cur)
+    zones = []
+    for g in groups:
+        if len(g) < 2:
+            continue
+        ys = [p["y"] for p in g]
+        cy = float(np.mean(ys))
+        zones.append({"kind": "support" if cy > close_yv else "resistance",
+                      "top_y": min(ys) - tol / 2, "bottom_y": max(ys) + tol / 2, "center_y": cy,
+                      "touches": len(g), "last_index": max(p["index"] for p in g),
+                      "points": [{"index": p["index"], "x": p["x"], "y": p["y"]} for p in g]})
+    zones.sort(key=lambda z: (z["touches"], z["last_index"]), reverse=True)
+    return zones[:max_zones]
+
+
+def double_pattern(points, candles, tol, close_yv, kind):
+    """Double bottom (kind='low') or double top (kind='high') from the last two swings."""
+    sw = [p for p in points if p["type"] == kind]
+    if len(sw) < 2:
+        return None
+    a, b = sw[-2], sw[-1]
+    if abs(a["y"] - b["y"]) > 1.5 * tol:
+        return None
+    between = candles[a["index"] + 1:b["index"]]
+    if not between:
+        return None
+    if kind == "low":
+        neck_c = min(between, key=lambda c: c["high_y"])
+        neck = neck_c["high_y"]
+        if max(a["y"], b["y"]) - neck < 3 * tol:
+            return None
+        confirmed = any(close_y(c) < neck - tol for c in candles[b["index"] + 1:])
+        name, bias = "Double bottom", "bullish"
+    else:
+        neck_c = max(between, key=lambda c: c["low_y"])
+        neck = neck_c["low_y"]
+        if neck - min(a["y"], b["y"]) < 3 * tol:
+            return None
+        confirmed = any(close_y(c) > neck + tol for c in candles[b["index"] + 1:])
+        name, bias = "Double top", "bearish"
+    return {"name": name, "bias": bias, "points": [a, b], "neck_y": neck, "neck_x": neck_c["x"],
+            "confirmed": confirmed, "grade": "weak",
+            "tentative": bool(a.get("tentative") or b.get("tentative"))}
+
+
+def cmd_levels(args):
+    global LOG_SCALE
+    det = json.load(open(args.detect, encoding="utf-8"))
+    LOG_SCALE = bool(det.get("log"))
+    calib = parse_calib(det.get("calib"))
+    candles = det["candles"]
+    if len(candles) < 20:
+        raise SystemExit("Need at least 20 candles; run detect on a wider chart.")
+    rx0, ry0, rx1, ry1 = det["region"]
+    tol = args.tol_px if args.tol_px else max(3.0, args.tol_pct / 100 * (ry1 - ry0))
+
+    n = len(candles)
+    start = max(0, n - args.lookback)
+    piv = find_pivots(candles, args.left, args.right)
+    piv += tail_extremes(candles, args.left, args.right)
+    for p in piv:
+        p["x"] = candles[p["index"]]["x"]
+    piv = [p for p in piv if p["index"] >= start]
+    highs = [p for p in piv if p["type"] == "high"]
+    lows = [p for p in piv if p["type"] == "low"]
+    last = candles[-1]
+    cy = close_y(last)
+
+    def price(y):
+        return y_to_price(y, calib) if calib else None
+
+    res = best_line(highs, candles, "resistance", tol, args.max_age, args.max_stale)
+    sup = best_line(lows, candles, "support", tol, args.max_age, args.max_stale)
+
+    def export_line(line):
+        if not line:
+            return None
+        brk = first_break(line, candles, tol)
+        ly = line_y(line, last["x"])
+        return {
+            "kind": line["kind"],
+            "touch_count": len(line["touches"]),
+            "touches": [{"index": t["index"], "x": t["x"], "y": t["y"], "price": price(t["y"]),
+                         "tentative": bool(t.get("tentative"))} for t in line["touches"]],
+            "start": [line["touches"][0]["x"], line["touches"][0]["y"]],
+            "slope_px": line["slope"],
+            "y_at_last_candle": ly,
+            "price_at_last_candle": price(ly),
+            "broken_at_index": brk,
+            "broken_price": price(line_y(line, candles[brk]["x"])) if brk is not None else None,
+        }
+
+    out = {
+        "tolerance_px": round(tol, 2),
+        "min_touches": args.min_touches,
+        "lookback_candles": args.lookback,
+        "last_close_y": cy,
+        "last_close_price": price(cy),
+        "resistance": export_line(res),
+        "support": export_line(sup),
+        "zones": [],
+        "pattern": None,
+        "double": None,
+        "notes": [],
+    }
+    for z in zones_from(piv, cy, tol):
+        z["center_price"] = price(z["center_y"])
+        z["top_price"], z["bottom_price"] = price(z["top_y"]), price(z["bottom_y"])
+        out["zones"].append(z)
+
+    if res and sup:
+        name, bias, rdir, sdir = classify(res, sup, tol)
+        r_ok = len(res["touches"]) >= args.min_touches
+        s_ok = len(sup["touches"]) >= args.min_touches
+        valid = r_ok and s_ok
+        R, S = out["resistance"], out["support"]
+        if R["broken_at_index"] is not None and (S["broken_at_index"] is None or
+                                                 R["broken_at_index"] <= S["broken_at_index"]):
+            status, brk_price = "broke up", R["broken_price"]
+        elif S["broken_at_index"] is not None:
+            status, brk_price = "broke down", S["broken_price"]
+        else:
+            status, brk_price = "inside", None
+        if not valid:
+            grade = "none"
+            verdict = (f"Not a valid pattern: resistance {len(res['touches'])} / support "
+                       f"{len(sup['touches'])} touches (need {args.min_touches} each)")
+        elif status == "inside":
+            grade = "unproven"
+            verdict = "Valid pattern, still forming: wait for a candle CLOSE outside"
+        else:
+            grade = "moderate"
+            verdict = f"Valid pattern, {status} on a close"
+        out["pattern"] = {
+            "name": name, "bias": bias, "resistance_direction": rdir, "support_direction": sdir,
+            "valid": valid, "status": status, "grade": grade, "verdict": verdict,
+            "breakout_up_price": R["price_at_last_candle"], "breakout_up_y": R["y_at_last_candle"],
+            "breakdown_price": S["price_at_last_candle"], "breakdown_y": S["y_at_last_candle"],
+            "break_price": brk_price,
+        }
+    else:
+        out["notes"].append("Could not fit both a support and a resistance line in the lookback window.")
+
+    dbl = double_pattern(piv, candles, tol, cy, "low") or double_pattern(piv, candles, tol, cy, "high")
+    if dbl:
+        dbl["neck_price"] = price(dbl["neck_y"])
+        dbl["points"] = [{"index": p["index"], "x": p["x"], "y": p["y"], "price": price(p["y"]),
+                          "tentative": bool(p.get("tentative"))} for p in dbl["points"]]
+        out["double"] = dbl
+    if any(p.get("tentative") for p in piv):
+        out["notes"].append("Swings in the last few candles are tentative (not confirmed yet).")
+    json.dump(out, sys.stdout, indent=1, default=float)
+    sys.stdout.write("\n")
+
+
+def cmd_draw_levels(args):
+    """Chart 2: support/resistance lines with numbered touches, pattern callout, breakout prices."""
+    lv = json.load(open(args.levels, encoding="utf-8"))
+    det = json.load(open(args.detect, encoding="utf-8"))
+    spec = json.load(open(args.spec, encoding="utf-8")) if args.spec else {}
+    calib = calib_from(args, spec, det)
+    src = Image.open(args.image).convert("RGBA")
+    W, H = src.size
+    s = max(1.0, W / 1100.0)
+    f_small = load_font(int(12 * s))
+    f_mid = load_font(int(14 * s), bold=True)
+    f_num = load_font(int(11 * s), bold=True)
+    rx0, ry0, rx1, ry1 = det["region"]
+    candles = det["candles"]
+    last_x = candles[-1]["x"]
+
+    RED, GREEN, YEL = (239, 68, 68), (34, 197, 94), (234, 179, 8)
+    pat = lv.get("pattern")
+    dbl = lv.get("double")
+
+    # bottom band text
+    lines = [("title", spec.get("title", "Support & resistance"))]
+    if pat:
+        nm = pat["name"] if pat["valid"] else "possible " + pat["name"][0].lower() + pat["name"][1:]
+        lines.append(("text", f"Pattern: {nm} · bias {pat['bias'].upper()}"))
+        lines.append(("text", pat["verdict"]))
+        if pat.get("breakout_up_price") is not None:
+            lines.append(("text", f"Break UP if a candle closes above {fmt_price(pat['breakout_up_price'])}"
+                                  f" · Break DOWN if it closes below {fmt_price(pat['breakdown_price'])}"))
+    else:
+        lines.append(("text", "No clear support/resistance pattern in view"))
+    if dbl:
+        state = "confirmed" if dbl["confirmed"] else "not confirmed"
+        lines.append(("text", f"{dbl['name']} ({state}): neckline {fmt_price(dbl.get('neck_price'))} · Evidence WEAK"))
+    for t in spec.get("summary", [])[:3]:
+        lines.append(("text", t))
+    lines.append(("dim", f"Rule: a valid pattern needs {lv['min_touches']}+ touches on each line. "
+                         "Confirmed only on a candle CLOSE."))
+    lh = int(19 * s)
+    band_h = int(lh * len(lines) + 2 * lh + 16 * s)
+    panel_w = int(0.24 * W)
+
+    bg = src.getpixel((2, 2))
+    canvas = Image.new("RGBA", (W + panel_w, H + band_h), (15, 23, 42, 255))
+    canvas.paste(Image.new("RGBA", (W + panel_w, H), bg), (0, 0))
+    canvas.paste(src, (0, 0))
+    CW, CH = canvas.size
+    overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    d = ImageDraw.Draw(overlay)
+    occ = pane_occupancy(src, canvas.size, det["region"], 0)
+    pane_bounds = (rx0 + 4 * s, ry0 + 4 * s, rx1 - 4 * s, ry1 - 4 * s)
+    d.rectangle([W, 0, CW, H], fill=(15, 23, 42, 150))
+    panel_tags = []  # (y, text, colour), stacked later so they never overlap
+
+    # zones (light bands)
+    zones = sorted(lv.get("zones", []), key=lambda z: abs(z["center_y"] - lv["last_close_y"]))[:2]
+    for z in zones:
+        col = GREEN if z["kind"] == "support" else RED
+        d.rectangle([rx0, z["top_y"], rx1, z["bottom_y"]], fill=col + (34,), outline=col + (90,))
+        txt = f"{z['kind'].title()} zone {fmt_price(z.get('center_price'))} · {z['touches']} touches"
+        panel_tags.append((z["center_y"], txt, col, 140))
+
+    def draw_line(L, col, valid):
+        if not L:
+            return
+        x_a, y_a = L["start"]
+        y_last = L["y_at_last_candle"]
+        t_last = L["touches"][-1]
+        y_t = y_a + L["slope_px"] * (t_last["x"] - x_a)
+        width = max(2, int((3 if valid else 2) * s))
+        alpha = 245 if valid else 150
+        d.line([(x_a, y_a), (t_last["x"], y_t)], fill=col + (alpha,), width=width)
+        x_end, y_end = rx1, y_a + L["slope_px"] * (rx1 - x_a)
+        if L["slope_px"] and not (ry0 <= y_end <= ry1):  # stop where the line leaves the pane
+            y_end = min(max(y_end, ry0), ry1)
+            x_end = x_a + (y_end - y_a) / L["slope_px"]
+        if x_end > t_last["x"]:
+            dashed_line(d, (t_last["x"], y_t), (x_end, y_end), col + (alpha,), width)
+        occ.line([(x_a, y_a), (rx1, y_a + L["slope_px"] * (rx1 - x_a))], 6 * s)
+        rad = 9 * s
+        for k, t in enumerate(L["touches"], 1):
+            x, y = t["x"], t["y"]
+            if t.get("tentative"):
+                d.ellipse([x - rad, y - rad, x + rad, y + rad], fill=(15, 23, 42, 230), outline=col + (255,),
+                          width=max(1, int(2 * s)))
+                lbl = "?"
+            else:
+                d.ellipse([x - rad, y - rad, x + rad, y + rad], fill=col + (255,), outline=(255, 255, 255, 255),
+                          width=max(1, int(s)))
+                lbl = str(k)
+            tw, th = text_size(d, lbl, f_num)
+            d.text((x - tw / 2, y - th / 2 - 2 * s), lbl, font=f_num, fill=(255, 255, 255, 255))
+            occ.box((x - rad, y - rad, x + rad, y + rad))
+
+    valid = bool(pat and pat["valid"])
+    draw_line(lv.get("resistance"), RED, valid)
+    draw_line(lv.get("support"), GREEN, valid)
+    if pat and pat.get("breakout_up_price") is not None:
+        panel_tags.append((pat["breakout_up_y"], f"Break UP above {fmt_price(pat['breakout_up_price'])}", RED, 240))
+        panel_tags.append((pat["breakdown_y"], f"Break DOWN below {fmt_price(pat['breakdown_price'])}", GREEN, 240))
+
+    # double bottom / top
+    if dbl:
+        nx = dbl["points"][0]["x"]
+        dashed_line(d, (nx, dbl["neck_y"]), (rx1, dbl["neck_y"]), YEL + (240,), max(2, int(2 * s)))
+        occ.line([(nx, dbl["neck_y"]), (rx1, dbl["neck_y"])], 6 * s)
+        tag = "B" if dbl["name"] == "Double bottom" else "T"
+        for k, p in enumerate(dbl["points"], 1):
+            yy = p["y"] + (16 * s if tag == "B" else -16 * s)
+            occ.box(label_box(d, (p["x"], yy), f"{tag}{k}", f_num, (15, 23, 42, 255), YEL + (240,),
+                              anchor="ct" if tag == "B" else "cb"))
+        panel_tags.append((dbl["neck_y"], f"Neckline {fmt_price(dbl.get('neck_price'))}", YEL, 240))
+
+    # pattern callouts (after all lines so they avoid them)
+    if pat and lv.get("resistance") and lv.get("support"):
+        R, S_ = lv["resistance"], lv["support"]
+        x_mid = (max(R["touches"][0]["x"], S_["touches"][0]["x"]) + last_x) / 2
+        y_mid = (R["start"][1] + R["slope_px"] * (x_mid - R["start"][0]) +
+                 S_["start"][1] + S_["slope_px"] * (x_mid - S_["start"][0])) / 2
+        grade = pat["grade"]
+        gcol = GRADE_COLOURS.get(grade, GRADE_COLOURS["unproven"]) if pat["valid"] else (148, 163, 184)
+        gtext = f"Evidence: {GRADE_TEXT.get(grade, grade.upper())}" if pat["valid"] else "Not graded (not a valid pattern)"
+        rows = [(pat["name"] if pat["valid"] else "Possible " + pat["name"][0].lower() + pat["name"][1:],
+                 f_mid, (255, 255, 255, 255)),
+                (f"Bias: {pat['bias'].upper()} · touches R {R['touch_count']} / S {S_['touch_count']}",
+                 f_small, (203, 213, 225, 255)),
+                ("VALID" if pat["valid"] else f"NOT VALID: needs {lv['min_touches']}+ touches each",
+                 f_small, (GREEN if pat["valid"] else RED) + (255,)),
+                (gtext, f_small, gcol + (255,))]
+        callout(d, occ, (x_mid, y_mid), rows, pane_bounds, s, gcol)
+    if dbl:
+        p2 = dbl["points"][-1]
+        rows = [(dbl["name"], f_mid, (255, 255, 255, 255)),
+                ("confirmed" if dbl["confirmed"] else f"not confirmed: needs close beyond {fmt_price(dbl.get('neck_price'))}",
+                 f_small, (203, 213, 225, 255)),
+                ("Evidence: WEAK", f_small, YEL + (255,))]
+        callout(d, occ, ((dbl["points"][0]["x"] + p2["x"]) / 2, dbl["neck_y"]), rows, pane_bounds, s, YEL)
+
+    # panel tags, de-overlapped top to bottom
+    panel_tags.sort(key=lambda t: t[0])
+    min_gap = 26 * s
+    placed = []
+    for y, txt, col, alpha in panel_tags:
+        yy = max(y, placed[-1] + min_gap) if placed else y
+        yy = min(max(yy, 14 * s), H - 14 * s)
+        placed.append(yy)
+        if abs(yy - y) > 2:
+            d.line([(W + 2 * s, y), (W + 12 * s, yy)], fill=col + (200,), width=max(1, int(s)))
+        label_box(d, (CW - 8 * s, yy), txt, f_small, (255, 255, 255, 255), col + (alpha,), anchor="rm")
+
+    # bottom band
+    by = H
+    d.line([(0, by), (CW, by)], fill=(71, 85, 105, 255), width=max(1, int(s)))
+    y = by + 8 * s
+    for k, t in lines:
+        font = f_mid if k == "title" else f_small
+        colr = (148, 163, 184, 255) if k == "dim" else (255, 255, 255, 255)
+        d.text((12 * s, y), t, font=font, fill=colr)
+        y += lh
+    d.text((12 * s, CH - lh - 4 * s),
+           "Educational only. Not financial advice.  github.com/Dimuth-Wick/crypto-chart-skills",
+           font=f_small, fill=(148, 163, 184, 255))
+    lx = CW - 12 * s
+    for g in ("no_edge", "unproven", "weak", "moderate"):
+        b = label_box(d, (lx, CH - lh - 6 * s), GRADE_TEXT[g], f_small, (15, 23, 42, 255),
+                      GRADE_COLOURS[g] + (245,), anchor="rt")
+        lx = b[0] - 6 * s
+
+    out = Image.alpha_composite(canvas, overlay).convert("RGB")
+    out_path = args.output or os.path.splitext(args.image)[0] + "_levels.png"
     out.save(out_path)
     print(out_path)
 
@@ -672,6 +1245,28 @@ def main(argv=None):
     b.add_argument("--log", action="store_true", help="price axis is logarithmic")
     b.add_argument("-o", "--output")
     b.set_defaults(func=cmd_draw)
+
+    lv = sub.add_parser("levels", help="support/resistance lines, touch counts, pattern and breakout prices")
+    lv.add_argument("detect", help="detect.json from the detect command")
+    lv.add_argument("--min-touches", type=int, default=3, help="touches needed on EACH line for a valid pattern")
+    lv.add_argument("--lookback", type=int, default=100, help="only use the last N candles (default 100)")
+    lv.add_argument("--max-age", type=int, default=10,
+                    help="ignore lines broken more than N candles ago (finished patterns, default 10)")
+    lv.add_argument("--max-stale", type=int, default=40,
+                    help="a line's last touch must be within the last N candles (default 40)")
+    lv.add_argument("--left", type=int, default=3)
+    lv.add_argument("--right", type=int, default=3)
+    lv.add_argument("--tol-pct", type=float, default=1.2, help="touch tolerance, %% of pane height (default 1.2)")
+    lv.add_argument("--tol-px", type=float, help="touch tolerance in pixels (overrides --tol-pct)")
+    lv.set_defaults(func=cmd_levels)
+
+    dl = sub.add_parser("draw-levels", help="chart 2: support/resistance, touches, pattern, breakout prices")
+    dl.add_argument("image")
+    dl.add_argument("levels", help="levels.json from the levels command")
+    dl.add_argument("--detect", required=True)
+    dl.add_argument("--spec", help="optional JSON with title and extra summary lines")
+    dl.add_argument("-o", "--output")
+    dl.set_defaults(func=cmd_draw_levels)
 
     c = sub.add_parser("size", help="position size and risk/reward")
     c.add_argument("--account", type=float, required=True)

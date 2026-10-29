@@ -17,6 +17,9 @@ Full sources: `docs/research.md` in the repository.
 | Market structure: HH-HL uptrend, LH-LL downtrend | `moderate` | Trend / range-breakout rules showed excess returns in crypto studies; image-based trend signals predictive in equities (Jiang, Kelly & Xiu 2023). Costs and bubbles reduce gains |
 | Break of structure (close beyond last swing) | `moderate` | Same trading-range breakout evidence |
 | Range breakout (close outside a horizontal range) | `moderate` | Trading-range breakout studies |
+| Channel / zigzag / range / triangle **breakout** with **3+ touches on each line** (close outside) | `moderate` | Range/structure breakout evidence; the 3-touch validity rule is the author's practitioner rule |
+| Same pattern, valid (3+ touches each) but still **inside** | `unproven` | Forming; no evidence the shape alone predicts direction |
+| Fewer than 3 touches on a line | not graded | Not a valid pattern: say "possible ..." and do not plan on it |
 | Triangle **breakout** (close outside the triangle) | `moderate` | Graded as a range/structure breakout. The shape itself has no dedicated crypto study |
 | Triangle **before** breakout | `unproven` | No evidence that the shape predicts direction |
 | Head & shoulders / inverse | `weak` | Mixed: some information in US stocks (Lo, Mamaysky & Wang 2000; Savin et al.), unprofitable on average per Osler. No strong crypto study |
