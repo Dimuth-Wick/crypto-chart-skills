@@ -662,6 +662,12 @@ def cmd_draw(args):
     for anchor_pt, rows, col in pending:  # after all lines, so callouts avoid every line
         callout(d, occ, anchor_pt, rows, pane_bounds, s, col)
 
+    # ---------------- double bottom / top from levels.json, drawn as a visible W / M
+    lv = json.load(open(args.levels, encoding="utf-8")) if getattr(args, "levels", None) else None
+    if lv and lv.get("double") and candles:
+        draw_double(overlay, d, occ, src, lv["double"], candles, region, s, Y, calib,
+                    (f_small, f_mid, load_font(int(11 * s), bold=True)), in_pane_labels=True)
+
     # ---------------- plan
     if has_plan:
         start_x = float(pivots[-1]["x"]) if pivots else rx0 + (rx1 - rx0) * 0.6
@@ -1001,6 +1007,170 @@ def cmd_levels(args):
     sys.stdout.write("\n")
 
 
+def draw_double(overlay, d, occ, src, dbl, candles, region, s, Y, calib, fonts, in_pane_labels):
+    """Draw a double bottom/top as a visible W (or M) with neckline, height and a zoom inset.
+
+    Coordinates in `dbl` and `candles` are original-image pixels; Y() maps y to the canvas.
+    Returns panel tags [(y_canvas, text, colour, alpha)].
+    """
+    f_small, f_mid, f_num = fonts
+    YEL, DARK = (234, 179, 8), (15, 23, 42)
+    rx0, ry0, rx1, ry1 = region
+    bottom = dbl["name"] == "Double bottom"
+    p1, p2 = dbl["points"]
+    i1, i2 = p1["index"], p2["index"]
+    neck_x, neck_y = dbl["neck_x"], dbl["neck_y"]
+    width_c = max(2, i2 - i1)
+
+    # start of the move into bottom 1 (highest high before it, for a bottom) and the exit (latest close)
+    lo = max(0, i1 - width_c)
+    before = candles[lo:i1] or candles[i1:i1 + 1]
+    c_start = min(before, key=lambda c: c["high_y"]) if bottom else max(before, key=lambda c: c["low_y"])
+    start = (c_start["x"], neck_y)
+    last = candles[-1]
+    # right leg: real candles if price already moved away from bottom 2, else a dashed "still needed" leg
+    leg = max(abs(neck_x - p1["x"]), 30 * s) * 0.7
+    if len(candles) - 1 - i2 >= 3:
+        exit_pt = (last["x"], close_y(last))
+        projected = None
+    else:
+        exit_pt = (p2["x"], p2["y"])
+        projected = (min(p2["x"] + leg, rx1 - 4 * s), neck_y)
+    shape = [start, (p1["x"], p1["y"]), (neck_x, neck_y), (p2["x"], p2["y"])]
+    if exit_pt != (p2["x"], p2["y"]):
+        shape.append(exit_pt)
+    right_x = projected[0] if projected else exit_pt[0]
+
+    def C(pt):  # original -> canvas
+        return (pt[0], Y(pt[1]))
+
+    # shaded W/M area under (over) the neckline
+    poly = [C(start), C((p1["x"], p1["y"])), C((neck_x, neck_y)), C((p2["x"], p2["y"])), C((right_x, neck_y))]
+    d.polygon(poly, fill=YEL + (48,))
+    # the W/M line: dark halo then bright line, so it stands out on any candles
+    pts = [C(p) for p in shape]
+    d.line(pts, fill=(0, 0, 0, 170), width=max(4, int(7 * s)), joint="curve")
+    d.line(pts, fill=YEL + (255,), width=max(3, int(4 * s)), joint="curve")
+    occ.line(pts, 8 * s)
+    if projected:  # the part of the W that has not happened yet
+        dashed_line(d, C((p2["x"], p2["y"])), C(projected), YEL + (255,), max(2, int(3 * s)), dash=8, gap=6)
+        draw_arrow(d, C((p2["x"] + (projected[0] - p2["x"]) * 0.85, p2["y"] + (projected[1] - p2["y"]) * 0.85)),
+                   C(projected), YEL + (255,), max(2, int(2 * s)), 10 * s)
+        occ.line([C((p2["x"], p2["y"])), C(projected)], 6 * s)
+    # neckline
+    dashed_line(d, C(start), (rx1, Y(neck_y)), YEL + (255,), max(2, int(2 * s)))
+    occ.line([C(start), (rx1, Y(neck_y))], 6 * s)
+    # bottoms / tops
+    tag = "B" if bottom else "T"
+    for k, p in enumerate((p1, p2), 1):
+        x, y = C((p["x"], p["y"]))
+        r = 7 * s
+        d.ellipse([x - r, y - r, x + r, y + r], fill=YEL + (255,), outline=(255, 255, 255, 255), width=max(1, int(s)))
+        lab = f"{tag}{k}" + ("?" if p.get("tentative") else "")
+        occ.box(label_box(d, (x, y + (r + 4 * s if bottom else -r - 4 * s)), lab, f_num, DARK + (255,), YEL + (245,),
+                          anchor="ct" if bottom else "cb"))
+    # height arrow at the neckline peak
+    base_y = (p1["y"] + p2["y"]) / 2
+    hx = neck_x
+    draw_arrow(d, C((hx, base_y)), C((hx, neck_y)), YEL + (230,), max(1, int(2 * s)), 8 * s)
+    draw_arrow(d, C((hx, neck_y)), C((hx, base_y)), YEL + (230,), max(1, int(2 * s)), 8 * s)
+
+    tags = []
+    neck_p = y_to_price(neck_y, calib) if calib else None
+    base_p = y_to_price(base_y, calib) if calib else None
+    target_p = None
+    if neck_p is not None and base_p is not None:
+        height = abs(neck_p - base_p)
+        target_p = neck_p + height if bottom else neck_p - height
+        ty = price_to_y(target_p, calib)
+        if ry0 <= ty <= ry1:
+            dashed_line(d, C((p2["x"], ty)), (rx1, Y(ty)), YEL + (150,), max(1, int(s)), dash=6, gap=6)
+        tags.append((Y(min(max(ty, ry0), ry1)), f"Target if confirmed ≈ {fmt_price(target_p)}", YEL, 150))
+        label_box(d, (hx + 6 * s, Y((base_y + neck_y) / 2)), f"height {fmt_price(height)}", f_small,
+                  DARK + (255,), YEL + (230,), anchor="lm")
+    tags.append((Y(neck_y), f"Neckline {fmt_price(neck_p)}", YEL, 245))
+    if in_pane_labels:
+        for ty, txt, col, a in tags:
+            occ.box(label_box(d, (rx1 - 6 * s, ty - 2 * s), txt, f_small, DARK + (255,), col + (a,), anchor="rb"))
+
+    # ---- zoom inset (only when the pattern is small on screen)
+    bx0 = max(rx0, start[0] - 18 * s)
+    bx1 = min(rx1, right_x + 18 * s)
+    top_y = min(neck_y, p1["y"], p2["y"])
+    bot_y = max(neck_y, p1["y"], p2["y"])
+    by0 = max(ry0, top_y - 28 * s)
+    by1 = min(ry1, bot_y + 30 * s)
+    bw, bh = bx1 - bx0, by1 - by0
+    k = min(0.30 * (rx1 - rx0) / bw, 0.45 * (ry1 - ry0) / bh, 3.0)
+    state = "confirmed" if dbl["confirmed"] else "not confirmed"
+    title = f"ZOOM: {dbl['name']} · {state} · Evidence WEAK"
+    if k >= 1.4:
+        head = 24 * s
+        tw_title = text_size(d, title, f_small)[0] + 16 * s
+        if bw * k < tw_title:  # make the inset wide enough for its title
+            k = tw_title / bw
+        iw, ih = bw * k, bh * k + head
+        occ.box((bx0, Y(by0), bx1, Y(by1)), grow=6)
+        bounds = (rx0 + 6 * s, Y(ry0) + 6 * s, rx1 - 6 * s, Y(ry1) - 6 * s)
+        best = None
+        step = int(16 * s)
+        acx, acy = (bx0 + bx1) / 2, Y((by0 + by1) / 2)
+        for yy in range(int(bounds[1]), int(bounds[3] - ih), step):
+            for xx in range(int(bounds[0]), int(bounds[2] - iw), step):
+                b = (xx, yy, xx + iw, yy + ih)
+                c = occ.cost(b) + 0.6 * math.hypot(xx + iw / 2 - acx, yy + ih / 2 - acy)
+                if best is None or c < best[0]:
+                    best = (c, b)
+        if best:
+            ix, iy = int(best[1][0]), int(best[1][1])
+            crop = src.crop((int(bx0), int(by0), int(bx1), int(by1))).resize((int(iw), int(bh * k)), Image.LANCZOS)
+            overlay.paste(crop.convert("RGBA"), (ix, int(iy + head)))
+
+            def T(pt):
+                return (ix + (pt[0] - bx0) * k, iy + head + (pt[1] - by0) * k)
+
+            ipoly = [T(start), T((p1["x"], p1["y"])), T((neck_x, neck_y)), T((p2["x"], p2["y"])), T((right_x, neck_y))]
+            d.polygon(ipoly, fill=YEL + (40,))
+            d.line([T(p) for p in shape], fill=(0, 0, 0, 170), width=max(4, int(8 * s)), joint="curve")
+            d.line([T(p) for p in shape], fill=YEL + (255,), width=max(3, int(5 * s)), joint="curve")
+            if projected:
+                dashed_line(d, T((p2["x"], p2["y"])), T(projected), YEL + (255,), max(2, int(4 * s)), dash=10, gap=7)
+                draw_arrow(d, T((p2["x"] + (projected[0] - p2["x"]) * 0.8, p2["y"] + (projected[1] - p2["y"]) * 0.8)),
+                           T(projected), YEL + (255,), max(2, int(3 * s)), 12 * s)
+                mx, my = T(((p2["x"] + projected[0]) / 2, (p2["y"] + projected[1]) / 2))
+                label_box(d, (mx + 8 * s, my), "still needed: close above neckline", f_small,
+                          (255, 255, 255, 255), DARK + (230,), anchor="lm")
+            dashed_line(d, T(start), (ix + iw, T(start)[1]), YEL + (255,), max(2, int(2 * s)))
+            for kk, p in enumerate((p1, p2), 1):
+                x, y = T((p["x"], p["y"]))
+                label_box(d, (x, y + (8 * s if bottom else -8 * s)), f"{tag}{kk}", f_num, DARK + (255,), YEL + (245,),
+                          anchor="ct" if bottom else "cb")
+            label_box(d, (ix + iw - 4 * s, T(start)[1] - 3 * s), f"Neckline {fmt_price(neck_p)}", f_small,
+                      DARK + (255,), YEL + (245,), anchor="rb")
+            d.rectangle([ix, iy, ix + iw, iy + head], fill=DARK + (245,))
+            d.text((ix + 8 * s, iy + 4 * s), title, font=f_small, fill=YEL + (255,))
+            d.rectangle([ix, iy, ix + iw, iy + ih], outline=YEL + (255,), width=max(2, int(2 * s)))
+            # source box on the chart + arrow from the inset to it
+            dashed_line(d, (bx0, Y(by0)), (bx1, Y(by0)), YEL + (200,), max(1, int(s)), dash=6, gap=4)
+            dashed_line(d, (bx0, Y(by1)), (bx1, Y(by1)), YEL + (200,), max(1, int(s)), dash=6, gap=4)
+            dashed_line(d, (bx0, Y(by0)), (bx0, Y(by1)), YEL + (200,), max(1, int(s)), dash=6, gap=4)
+            dashed_line(d, (bx1, Y(by0)), (bx1, Y(by1)), YEL + (200,), max(1, int(s)), dash=6, gap=4)
+            sx = min(max(ix + iw / 2, bx0), bx1)
+            sy = Y(by0) if iy + ih < Y(by0) else Y(by1) if iy > Y(by1) else Y((by0 + by1) / 2)
+            ex = min(max(sx, ix), ix + iw)
+            ey = iy + ih if iy + ih < sy else iy if iy > sy else iy + ih / 2
+            if math.hypot(sx - ex, sy - ey) > 15 * s:
+                draw_arrow(d, (ex, ey), (sx, sy), YEL + (255,), max(2, int(2 * s)), 10 * s)
+            occ.box((ix, iy, ix + iw, iy + ih))
+            return tags, True
+    # no inset: a callout instead
+    rows = [(dbl["name"], f_mid, (255, 255, 255, 255)), (state, f_small, (203, 213, 225, 255)),
+            ("Evidence: WEAK", f_small, YEL + (255,))]
+    callout(d, occ, C(((p1["x"] + p2["x"]) / 2, neck_y)), rows,
+            (rx0 + 4 * s, Y(ry0) + 4 * s, rx1 - 4 * s, Y(ry1) - 4 * s), s, YEL)
+    return tags, False
+
+
 def cmd_draw_levels(args):
     """Chart 2: support/resistance lines with numbered touches, pattern callout, breakout prices."""
     lv = json.load(open(args.levels, encoding="utf-8"))
@@ -1102,18 +1272,6 @@ def cmd_draw_levels(args):
         panel_tags.append((pat["breakout_up_y"], f"Break UP above {fmt_price(pat['breakout_up_price'])}", RED, 240))
         panel_tags.append((pat["breakdown_y"], f"Break DOWN below {fmt_price(pat['breakdown_price'])}", GREEN, 240))
 
-    # double bottom / top
-    if dbl:
-        nx = dbl["points"][0]["x"]
-        dashed_line(d, (nx, dbl["neck_y"]), (rx1, dbl["neck_y"]), YEL + (240,), max(2, int(2 * s)))
-        occ.line([(nx, dbl["neck_y"]), (rx1, dbl["neck_y"])], 6 * s)
-        tag = "B" if dbl["name"] == "Double bottom" else "T"
-        for k, p in enumerate(dbl["points"], 1):
-            yy = p["y"] + (16 * s if tag == "B" else -16 * s)
-            occ.box(label_box(d, (p["x"], yy), f"{tag}{k}", f_num, (15, 23, 42, 255), YEL + (240,),
-                              anchor="ct" if tag == "B" else "cb"))
-        panel_tags.append((dbl["neck_y"], f"Neckline {fmt_price(dbl.get('neck_price'))}", YEL, 240))
-
     # pattern callouts (after all lines so they avoid them)
     if pat and lv.get("resistance") and lv.get("support"):
         R, S_ = lv["resistance"], lv["support"]
@@ -1131,13 +1289,10 @@ def cmd_draw_levels(args):
                  f_small, (GREEN if pat["valid"] else RED) + (255,)),
                 (gtext, f_small, gcol + (255,))]
         callout(d, occ, (x_mid, y_mid), rows, pane_bounds, s, gcol)
-    if dbl:
-        p2 = dbl["points"][-1]
-        rows = [(dbl["name"], f_mid, (255, 255, 255, 255)),
-                ("confirmed" if dbl["confirmed"] else f"not confirmed: needs close beyond {fmt_price(dbl.get('neck_price'))}",
-                 f_small, (203, 213, 225, 255)),
-                ("Evidence: WEAK", f_small, YEL + (255,))]
-        callout(d, occ, ((dbl["points"][0]["x"] + p2["x"]) / 2, dbl["neck_y"]), rows, pane_bounds, s, YEL)
+    if dbl:  # drawn last so the zoom inset can find empty space around everything else
+        tags, _ = draw_double(overlay, d, occ, src, dbl, candles, det["region"], s, lambda y: float(y), calib,
+                              (f_small, f_mid, f_num), in_pane_labels=False)
+        panel_tags.extend(tags)
 
     # panel tags, de-overlapped top to bottom
     panel_tags.sort(key=lambda t: t[0])
@@ -1243,6 +1398,7 @@ def main(argv=None):
     b.add_argument("--detect", help="detect.json from the detect command (enables pivot snapping)")
     b.add_argument("--calib", help="y1:price1,y2:price2 so levels can be given as prices")
     b.add_argument("--log", action="store_true", help="price axis is logarithmic")
+    b.add_argument("--levels", help="levels.json: draws a detected double bottom/top as a W/M")
     b.add_argument("-o", "--output")
     b.set_defaults(func=cmd_draw)
 

@@ -113,13 +113,20 @@ Otherwise show the plan with R:R only and mention 1% risk per trade as a common 
 ### 7. Draw and check
 Write `spec.json` (see `references/spec-format.md`), then:
 ```bash
-python scripts/annotate.py draw chart.png spec.json --detect detect.json --calib Y1:P1,Y2:P2 [--log] -o chart_annotated.png
+python scripts/annotate.py draw chart.png spec.json --detect detect.json --levels levels.json -o chart_annotated.png
 ```
 Then the levels chart:
 ```bash
 python scripts/annotate.py draw-levels chart.png levels.json --detect detect.json --spec levels_spec.json -o chart_levels.png
 ```
 (`levels_spec.json` is optional: `{"title": "...", "summary": ["extra line"]}`.)
+
+Calibration and `--log` are read from `detect.json`, so you do not need to repeat them.
+**Never name a pattern without drawing it.** A double bottom/top in `levels.json` is drawn
+automatically on both charts as a W/M: bold line through bottom 1 → neckline peak → bottom 2,
+shaded area, neckline, height and the measured target. If the second leg up has not happened
+yet, it is drawn **dashed** ("still needed"). Small patterns get a zoom inset. Do not add a
+double bottom to `spec.json` by hand.
 
 Open both images and check them: pivots sit on wicks, lines touch the numbered points,
 labels are readable and do not cover the pattern. Fix and redraw if needed.
