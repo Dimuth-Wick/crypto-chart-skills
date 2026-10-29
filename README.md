@@ -60,7 +60,19 @@ models are not precise at reading exact positions on candlestick charts.
 3. Install the two Python libraries: `pip install -r requirements.txt`
 4. Share a chart screenshot and ask, for example, *"What does this chart show? Any setup?"*
 
+### Recommended timeframes
+
+| Timeframe | Recommendation |
+|---|---|
+| **4-hour and higher** (4h, 1D, 1W) | ✅ Recommended. Patterns and structure are clearest here |
+| **1-hour** | ⚠️ Sometimes works. Use with extra caution |
+| **Below 1-hour** (30m, 15m, 5m, 1m) | ❌ Not recommended. Too much noise; patterns often don't make sense |
+
+This comes from my own trading experience, not from the research studies. Lower
+timeframes are also where fees, spread and fast bots have the biggest effect.
+
 ### Tips for good screenshots
+- Use a **4-hour or higher** timeframe (see above).
 - Candlestick chart with coloured candles (default green/red works best).
 - Hide indicators and drawings on the price pane.
 - 40–200 candles visible; the price axis visible on the right.
